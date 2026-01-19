@@ -4,9 +4,9 @@
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     /// Position of the vertex in x, y, z
-    position: [f32; 3],
+    pub position: [f32; 3],
     /// Color of the vertex in r, g, b
-    color: [f32; 3],
+    pub color: [f32; 3],
 }
 
 pub const VERTICES: &[Vertex] = &[
