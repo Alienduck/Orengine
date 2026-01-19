@@ -26,7 +26,7 @@ impl CameraUniform {
 
         // 2. View: Where the camera is
         let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 3.0, 3.0), // Rapproché pour voir la pizza
+            Vec3::new(1.0, 5.0, 3.0), // Rapproché pour voir la pizza
             Vec3::ZERO,               // Looking at (0, 0, 0)
             Vec3::Y,                  // "Up" is Y axis
         );
