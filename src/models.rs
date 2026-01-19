@@ -17,7 +17,7 @@ pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
     let (models, materials) =
         tobj::load_obj(&path, &load_options).expect("Failed to load 3D model");
 
-    let materials = materials.expect("Failed to load OBJ");
+    let _materials = materials.expect("Failed to load OBJ");
 
     // We assume the file contains only one object (the pizza)
     // If there are multiple, we take the first one
