@@ -36,12 +36,11 @@ pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
             ],
             // Random-ish color or White since OBJ has no vertex color usually
             color: [1.0, 1.0, 1.0], // White Pizza
+            tex_coords: [
+                mesh.texcoords[i * 2],
+                1.0 - mesh.texcoords[i * 2 + 1], // IMPORTANT : On inverse le V (Y) pour wgpu
+            ],
         });
-    }
-
-    for (i, m) in materials.iter().enumerate() {
-        dbg!("Material[{}].name = \'{}\'", i, m.name.as_ref() as &str);
-        // TODO: handle materials here
     }
 
     // 3. Get indices directly (convert to u32 just in case)
