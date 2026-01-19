@@ -1,4 +1,6 @@
-use orengine::{CameraUniform, Vertex, load_model};
+use std::path::Path;
+
+use orengine::{CameraUniform, Texture, Vertex, load_model};
 use wgpu::{RenderPipeline, util::DeviceExt};
 use winit::{
     dpi::PhysicalSize, event::*, event_loop::EventLoop, window::Window, window::WindowBuilder,
@@ -20,6 +22,7 @@ struct State {
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    texture_bind_group: wgpu::BindGroup,
     start_time: std::time::Instant, // To animate rotation
 }
 
@@ -139,23 +142,77 @@ impl State {
         // This tells wgpu how to read the bytes.
         // "Hey GPU, read 24 bytes at a time. The first 12 bytes are Position, the next 12 are Color."
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress, // How wide is one vertex?
-            step_mode: wgpu::VertexStepMode::Vertex, // Advance by vertex, not instance
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 // Attribute 0: Position (Offset 0)
                 wgpu::VertexAttribute {
                     offset: 0,
-                    shader_location: 0, // Corresponds to @location(0) in shader
-                    format: wgpu::VertexFormat::Float32x3, // vec3<f32>
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
                 },
-                // Attribute 1: Color (Offset 12 bytes - because 3 * 4 bytes per float)
+                // Attribute 1: Color (Offset 12 bytes)
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1, // Corresponds to @location(1) in shader
-                    format: wgpu::VertexFormat::Float32x3, // vec3<f32>
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // Attribute 2: TexCoords (Offset 24 bytes)
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 3]>())
+                        as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         };
+
+        let texture = Texture::from_image(
+            &device,
+            &queue,
+            Path::new("assets/pizzaTxt.png"),
+            Some("Pizza Texture"),
+        );
+
+        // 2. Créer le Layout de la texture (La prise électrique)
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        // 3. Créer le Bind Group (La fiche branchée)
+        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
 
         // 1. Charger le shader
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
@@ -164,7 +221,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
+                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -190,7 +247,7 @@ impl State {
                 topology: wgpu::PrimitiveTopology::TriangleList, // On dessine des triangles
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw, // Sens anti-horaire
-                cull_mode: Some(wgpu::Face::Back), // Ne pas dessiner le dos du triangle
+                cull_mode: None,                  // Désactivé temporairement pour déboguer
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -218,6 +275,7 @@ impl State {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
+            texture_bind_group,
             start_time: std::time::Instant::now(),
         }
     }
@@ -288,6 +346,7 @@ impl State {
 
             // Plug in the uniform data
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
 
             // 1. Bind Vertex Buffer (Slot 0)
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
