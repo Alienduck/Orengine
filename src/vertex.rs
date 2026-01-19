@@ -7,6 +7,8 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Color of the vertex in r, g, b
     pub color: [f32; 3],
+    /// UV maping coordonate
+    pub tex_coords: [f32; 2],
 }
 
 pub const VERTICES: &[Vertex] = &[
@@ -14,21 +16,25 @@ pub const VERTICES: &[Vertex] = &[
     Vertex {
         position: [-0.2, 0.5, 0.0],
         color: [1.0, 0.0, 0.0],
+        tex_coords: [0.0, 0.0],
     },
     // 1. Bottom Left - Green
     Vertex {
         position: [-0.5, -0.5, 0.0],
         color: [0.0, 1.0, 0.0],
+        tex_coords: [0.0, 0.0],
     },
     // 2. Bottom Right - Blue
     Vertex {
         position: [0.5, -0.5, 0.0],
         color: [0.0, 0.0, 1.0],
+        tex_coords: [0.0, 0.0],
     },
     // 3. Top Right - Yellow (Mix of Red and Green)
     Vertex {
         position: [0.5, 0.5, 0.0],
         color: [1.0, 1.0, 0.0],
+        tex_coords: [0.0, 0.0],
     },
 ];
 
