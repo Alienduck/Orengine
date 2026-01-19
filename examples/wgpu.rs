@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use orengine::{CameraUniform, Texture, Vertex, load_model};
+use orengine::{CameraUniform, DEPTH_FORMAT, Texture, Vertex, load_model};
 use wgpu::{RenderPipeline, util::DeviceExt};
 use winit::{
     dpi::PhysicalSize, event::*, event_loop::EventLoop, window::Window, window::WindowBuilder,
@@ -23,6 +23,7 @@ struct State {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
+    depth_texture: Texture,
     start_time: std::time::Instant, // To animate rotation
 }
 
@@ -214,6 +215,8 @@ impl State {
             label: Some("diffuse_bind_group"),
         });
 
+        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
+
         // 1. Charger le shader
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
 
@@ -252,7 +255,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None, // Pas de Z-buffer pour l'instant
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -276,6 +285,7 @@ impl State {
             camera_buffer,
             camera_bind_group,
             texture_bind_group,
+            depth_texture,
             start_time: std::time::Instant::now(),
         }
     }
@@ -286,6 +296,10 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            // Resize the texture to avoid crash
+            self.depth_texture =
+                Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
@@ -327,7 +341,6 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Couleur de fond (R, G, B, A) - Ici un bleu "Tunic-style"
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.1,
                             g: 0.2,
@@ -337,7 +350,14 @@ impl State {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None, // Pas de 3D (Z-buffer) pour l'instant
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
