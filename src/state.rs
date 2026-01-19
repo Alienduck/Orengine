@@ -2,6 +2,9 @@ use crate::{camera::CameraUniform, models::load_model, textures, vertex::Vertex}
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
+/// The main state of the application, holding all WGPU and rendering data.
+/// This struct is responsible for managing the GPU resources, rendering pipeline,
+/// and handling the rendering loop.
 pub struct State {
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
