@@ -1,10 +1,7 @@
+use orengine::{CameraUniform, INDICES, VERTICES, Vertex};
 use wgpu::{RenderPipeline, util::DeviceExt};
 use winit::{
-    dpi::PhysicalSize,
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::Window,
-    window::WindowBuilder,
+    dpi::PhysicalSize, event::*, event_loop::EventLoop, window::Window, window::WindowBuilder,
 };
 
 struct State {
@@ -13,8 +10,17 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: PhysicalSize<u32>,
-    window: std::sync::Arc<Window>, // Arc requis pour wgpu 0.19+
+    window: std::sync::Arc<Window>,
     render_pipeline: RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    /// The GPU memory block
+    index_buffer: wgpu::Buffer,
+    /// To know how many points to draw
+    num_indices: u32,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    start_time: std::time::Instant, // To animate rotation
 }
 
 impl State {
@@ -73,6 +79,89 @@ impl State {
         };
         surface.configure(&device, &config);
 
+        // A. Create the Uniform Data
+        let mut camera_uniform = CameraUniform::new();
+        // Initial calculation
+        camera_uniform.update_view_proj(0.0, config.width as f32 / config.height as f32);
+
+        // B. Create the Buffer (GPU Memory)
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // COPY_DST allows us to update it later
+        });
+
+        // C. Create the Bind Group Layout ( The Interface description )
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,                             // Slot 0
+                    visibility: wgpu::ShaderStages::VERTEX, // Only Vertex shader needs it
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+
+        // D. Create the Bind Group ( The Actual Connection )
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        // 2. Create Index Buffer (NEW)
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX, // Note the usage type!
+        });
+        let num_indices = INDICES.len() as u32;
+
+        // 1. Create the Vertex Buffer
+        // We send the VERTICES array to the GPU memory immediately
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES), // Convert struct to bytes
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let num_vertices = VERTICES.len() as u32;
+
+        // 2. Define the Vertex Buffer Layout
+        // This tells wgpu how to read the bytes.
+        // "Hey GPU, read 24 bytes at a time. The first 12 bytes are Position, the next 12 are Color."
+        let vertex_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress, // How wide is one vertex?
+            step_mode: wgpu::VertexStepMode::Vertex, // Advance by vertex, not instance
+            attributes: &[
+                // Attribute 0: Position (Offset 0)
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0, // Corresponds to @location(0) in shader
+                    format: wgpu::VertexFormat::Float32x3, // vec3<f32>
+                },
+                // Attribute 1: Color (Offset 12 bytes - because 3 * 4 bytes per float)
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1, // Corresponds to @location(1) in shader
+                    format: wgpu::VertexFormat::Float32x3, // vec3<f32>
+                },
+            ],
+        };
+
         // 1. Charger le shader
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
 
@@ -80,7 +169,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -91,7 +180,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main", // Nom de la fonction dans wgsl
-                buffers: &[], // Pas de buffers externes pour l'instant (on a tout hardcodé)
+                buffers: &[vertex_buffer_layout],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -128,6 +217,13 @@ impl State {
             config,
             size,
             render_pipeline,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -138,6 +234,22 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
         }
+    }
+
+    fn update(&mut self) {
+        // Calculate new rotation based on time
+        let time = self.start_time.elapsed().as_secs_f32();
+        let aspect = self.config.width as f32 / self.config.height as f32;
+
+        // Recalculate the matrix logic
+        self.camera_uniform.update_view_proj(time, aspect);
+
+        // Send the new data to the GPU
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -178,8 +290,21 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw(0..3, 0..1); // Dessine 3 sommets, 1 seule fois
-        } // _render_pass est drop ici, ce qui termine l'enregistrement
+
+            // Plug in the uniform data
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+            // 1. Bind Vertex Buffer (Slot 0)
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+
+            // 2. Bind Index Buffer (NEW)
+            // We must specify the format (Uint16 because our array is u16)
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+            // 3. Draw Indexed (NEW)
+            // ranges: indices, base_vertex, instances
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        }
 
         // D. On envoie le tout au GPU
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -201,7 +326,6 @@ fn main() {
 
     // Initialisation asynchrone via pollster
     let mut state = pollster::block_on(State::new(window.clone()));
-
     event_loop
         .run(move |event, target| match event {
             Event::WindowEvent {
@@ -210,12 +334,15 @@ fn main() {
             } if window_id == state.window.id() => match event {
                 WindowEvent::CloseRequested => target.exit(),
                 WindowEvent::Resized(physical_size) => state.resize(*physical_size),
-                WindowEvent::RedrawRequested => match state.render() {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-                    Err(e) => eprintln!("{:?}", e),
-                },
+                WindowEvent::RedrawRequested => {
+                    state.update();
+                    match state.render() {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                        Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+                        Err(e) => eprintln!("{:?}", e),
+                    }
+                }
                 _ => {}
             },
             Event::AboutToWait => state.window.request_redraw(),
