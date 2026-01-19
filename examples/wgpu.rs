@@ -1,4 +1,4 @@
-use orengine::{CameraUniform, INDICES, VERTICES, Vertex};
+use orengine::{CameraUniform, Vertex, load_model};
 use wgpu::{RenderPipeline, util::DeviceExt};
 use winit::{
     dpi::PhysicalSize, event::*, event_loop::EventLoop, window::Window, window::WindowBuilder,
@@ -117,28 +117,23 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
+        let (model_vertices, model_indices) = load_model("pizza.obj");
+
+        // 1. Vertex Buffer avec les données du modèle
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&model_vertices), // Utilise le vecteur chargé
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        // 2. Create Index Buffer (NEW)
+        // 2. Create Index Buffer
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: wgpu::BufferUsages::INDEX, // Note the usage type!
+            contents: bytemuck::cast_slice(&model_indices),
+            usage: wgpu::BufferUsages::INDEX,
         });
-        let num_indices = INDICES.len() as u32;
 
-        // 1. Create the Vertex Buffer
-        // We send the VERTICES array to the GPU memory immediately
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES), // Convert struct to bytes
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let num_vertices = VERTICES.len() as u32;
+        let num_indices = model_indices.len() as u32;
 
         // 2. Define the Vertex Buffer Layout
         // This tells wgpu how to read the bytes.
@@ -299,8 +294,7 @@ impl State {
 
             // 2. Bind Index Buffer (NEW)
             // We must specify the format (Uint16 because our array is u16)
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             // 3. Draw Indexed (NEW)
             // ranges: indices, base_vertex, instances
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
@@ -319,7 +313,7 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     let window = std::sync::Arc::new(
         WindowBuilder::new()
-            .with_title("Tunic Engine Rust")
+            .with_title("Orengine")
             .build(&event_loop)
             .unwrap(),
     );
