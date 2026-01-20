@@ -191,7 +191,7 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, // Make it visible to both shaders
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -257,7 +257,7 @@ impl State {
         let light_uniform = crate::light::LightUniform {
             position: [2.0, 2.0, 2.0], // Positioned above and to the right
             _padding: 0,
-            color: [1.0, 1.0, 1.0], // White light
+            color: [1.0, 0.0, 0.0], // White light
             _padding2: 0,
         };
 
