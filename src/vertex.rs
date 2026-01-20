@@ -9,40 +9,45 @@ pub struct Vertex {
     pub color: [f32; 3],
     /// UV maping coordonate
     pub tex_coords: [f32; 2],
+    /// Normal, the orientation of the vertex
+    pub normal: [f32; 3],
 }
 
-// TODO: useless for now
-pub const VERTICES: &[Vertex] = &[
-    // 0. Top Left - Red
-    Vertex {
-        position: [-0.2, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-        tex_coords: [0.0, 0.0],
-    },
-    // 1. Bottom Left - Green
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-        tex_coords: [0.0, 0.0],
-    },
-    // 2. Bottom Right - Blue
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-        tex_coords: [0.0, 0.0],
-    },
-    // 3. Top Right - Yellow (Mix of Red and Green)
-    Vertex {
-        position: [0.5, 0.5, 0.0],
-        color: [1.0, 1.0, 0.0],
-        tex_coords: [0.0, 0.0],
-    },
-];
-
-// TODO: useless for now
-// The indices (Order to connect the dots)
-// We use u16 because we have few points. For huge models, use u32.
-pub const INDICES: &[u16] = &[
-    0, 1, 2, // First triangle (TopLeft -> BottomLeft -> BottomRight)
-    0, 2, 3, // Second triangle (TopLeft -> BottomRight -> TopRight)
-];
+impl Vertex {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                // 0. Position
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // 1. Color
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // 2. Texture Coordinates
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 3]>())
+                        as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                // 3. Normal
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 3]>()
+                        + std::mem::size_of::<[f32; 3]>()
+                        + std::mem::size_of::<[f32; 2]>())
+                        as wgpu::BufferAddress,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        }
+    }
+}
