@@ -2,7 +2,12 @@ use crate::{
     Camera, CameraController, camera::CameraUniform, models::load_model, textures, vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
-use winit::{dpi::PhysicalSize, event::{KeyEvent, WindowEvent}, keyboard::PhysicalKey, window::Window};
+use winit::{
+    dpi::PhysicalSize,
+    event::{ElementState, KeyEvent, WindowEvent},
+    keyboard::PhysicalKey,
+    window::Window,
+};
 
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
@@ -13,7 +18,7 @@ pub struct State {
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: PhysicalSize<u32>,
-    pub window: std::sync::Arc<Window>, // Public for winit event handling
+    pub window: std::sync::Arc<Window>,
 
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -26,9 +31,11 @@ pub struct State {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
-    #[allow(dead_code)] // We keep this for later use
+    #[allow(dead_code)]
     diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
+
+    right_mouse_pressed: bool,
 }
 
 impl State {
@@ -289,6 +296,7 @@ impl State {
             camera_bind_group,
             diffuse_bind_group,
             depth_texture,
+            right_mouse_pressed: false,
         }
     }
 
@@ -319,12 +327,38 @@ impl State {
                     },
                 ..
             } => self.camera_controller.process_keyboard(*keycode, *state),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                self.right_mouse_pressed = true;
+                let _ = self
+                    .window
+                    .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                self.window.set_cursor_visible(false);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                self.right_mouse_pressed = false;
+                let _ = self
+                    .window
+                    .set_cursor_grab(winit::window::CursorGrabMode::None);
+                self.window.set_cursor_visible(true);
+                true
+            }
             _ => false,
         }
     }
 
     pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
-        self.camera_controller.process_mouse(delta.0, delta.1);
+        if self.right_mouse_pressed {
+            self.camera_controller.process_mouse(delta.0, delta.1);
+        }
     }
 
     pub fn update(&mut self) {
