@@ -2,7 +2,7 @@ use crate::{
     Camera, CameraController, camera::CameraUniform, models::load_model, textures, vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
-use winit::{dpi::PhysicalSize, window::Window};
+use winit::{dpi::PhysicalSize, event::{KeyEvent, WindowEvent}, keyboard::PhysicalKey, window::Window};
 
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
@@ -115,8 +115,8 @@ impl State {
 
         // 6. Camera
         let camera = Camera {
-            eye: (0.0, 4.0, 4.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
+            eye: (0.0, 1.0, 5.0).into(),
+            target: (0.0, 1.0, 0.0).into(),
             up: glam::Vec3::Y,
             aspect: config.width as f32 / config.height as f32,
             fovy: 45.0_f32.to_radians(),
@@ -124,7 +124,7 @@ impl State {
             zfar: 100.0,
         };
 
-        let camera_controller = CameraController::new(0.1);
+        let camera_controller = CameraController::new(0.01);
 
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
@@ -308,14 +308,23 @@ impl State {
         }
     }
 
-    pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
-        // Check if it's a CursorMoved event for camera rotation
-        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            let pos = (position.x as f32, position.y as f32);
-            self.camera_controller
-                .process_mouse_movement(pos, &mut self.camera);
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state,
+                        physical_key: PhysicalKey::Code(keycode),
+                        ..
+                    },
+                ..
+            } => self.camera_controller.process_keyboard(*keycode, *state),
+            _ => false,
         }
-        self.camera_controller.process_events(event)
+    }
+
+    pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
+        self.camera_controller.process_mouse(delta.0, delta.1);
     }
 
     pub fn update(&mut self) {
