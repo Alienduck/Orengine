@@ -3,14 +3,24 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
 };
 
-// On récupère le Bind Group 0, Binding 0
+// Get Bind Group 0, Binding 0
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
+
+struct LightUniform {
+    position: vec3<f32>,
+    color: vec3<f32>,
+};
+
+// Group 2 for lighting
+@group(2) @binding(0)
+var<uniform> light: LightUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
     @location(2) tex_coords: vec2<f32>,
+    @location(3) normal: vec3<f32>,
 };
 
 // A mat4 takes 4 slots (vec4)
@@ -25,6 +35,8 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
     @location(1) color: vec3<f32>,
+    @location(2) world_normal: vec3<f32>,   // Pass normal to fragment
+    @location(3) world_position: vec3<f32>, // Pass position to fragment
 };
 
 @vertex
@@ -40,6 +52,17 @@ fn vs_main(model: VertexInput, instance: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
     out.color = model.color;
+
+    // 1. Calculate world position
+    // We assume the model matrix handles rotation/scale/translation
+    let world_position = model_matrix * vec4<f32>(model.position, 1.0);
+    out.world_position = world_position.xyz;
+
+    // 2. Calculate world normal
+    // If we scale the object unevenly, we would need a "Normal Matrix", 
+    // but for rotation/translation only, model_matrix is fine.
+    // .xyz is important to ignore translation for normals (vectors don't have position)
+    out.world_normal = (model_matrix * vec4<f32>(model.normal, 0.0)).xyz;
     
     // Order: Projection * View * Model * Position
     out.clip_position = camera.view_proj * model_matrix * vec4<f32>(model.position, 1.0);
@@ -47,7 +70,7 @@ fn vs_main(model: VertexInput, instance: InstanceInput) -> VertexOutput {
     return out;
 }
 
-// Groupe 1 = Texture (Défini dans le code Rust)
+// Group 1 = Texture (Defined in Rust code)
 @group(1) @binding(0)
 var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1)
@@ -55,6 +78,23 @@ var s_diffuse: sampler;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    return tex_color * vec4<f32>(in.color, 1.0);
+    // 1. Get base color from texture
+    let object_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    
+    // 2. Ambient light (The minimum light everywhere)
+    let ambient_strength = 0.1;
+    let ambient_color = light.color * ambient_strength;
+
+    // 3. Diffuse light (Directional light)
+    let light_dir = normalize(light.position - in.world_position);
+    let normal = normalize(in.world_normal);
+    
+    // Dot product: 1.0 if facing light, 0.0 if 90 degrees, < 0 if backfacing
+    let diffuse_strength = max(dot(normal, light_dir), 0.0);
+    let diffuse_color = light.color * diffuse_strength;
+
+    // 4. Combine
+    let final_color = (ambient_color + diffuse_color) * object_color.xyz;
+
+    return vec4<f32>(final_color, object_color.a);
 }

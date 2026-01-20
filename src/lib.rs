@@ -10,3 +10,5 @@ mod state;
 pub use state::*;
 mod instance;
 pub use instance::*;
+mod light;
+pub use light::*;

@@ -1,6 +1,6 @@
 use crate::{
-    Camera, CameraController, Instance, InstanceRaw, camera::CameraUniform, models::load_model,
-    textures, vertex::Vertex,
+    Camera, CameraController, Instance, InstanceRaw, LightUniform, camera::CameraUniform,
+    models::load_model, textures, vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -40,6 +40,11 @@ pub struct State {
     depth_texture: textures::Texture,
 
     right_mouse_pressed: bool,
+
+    #[allow(dead_code)]
+    light_uniform: LightUniform,
+    light_buffer: wgpu::Buffer,
+    light_bind_group: wgpu::BindGroup,
 }
 
 impl State {
@@ -249,13 +254,54 @@ impl State {
         let depth_texture =
             textures::Texture::create_depth_texture(&device, &config, "depth_texture");
 
+        let light_uniform = crate::light::LightUniform {
+            position: [2.0, 2.0, 2.0], // Positioned above and to the right
+            _padding: 0,
+            color: [1.0, 1.0, 1.0], // White light
+            _padding2: 0,
+        };
+
+        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Light Buffer"),
+            contents: bytemuck::cast_slice(&[light_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let light_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("light_bind_group_layout"),
+            });
+
+        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &light_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: light_buffer.as_entire_binding(),
+            }],
+            label: Some("light_bind_group"),
+        });
+
         // 9. Pipeline
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                    &texture_bind_group_layout,
+                    &light_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -266,31 +312,9 @@ impl State {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[
-                    // 1. Tell the GPU to get the position, the color and the texture coords
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x3,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x3,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: (std::mem::size_of::<[f32; 3]>()
-                                    + std::mem::size_of::<[f32; 3]>())
-                                    as wgpu::BufferAddress,
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                        ],
-                    },
-                    // 2. The Instance Layout (The Matrix lol)
+                    // 1. Vertex layout (position, color, tex_coords, normal)
+                    Vertex::desc(),
+                    // 2. Instance layout (model matrix)
                     InstanceRaw::desc(),
                 ],
             },
@@ -344,6 +368,9 @@ impl State {
             right_mouse_pressed: false,
             instances,
             instance_buffer,
+            light_uniform,
+            light_buffer,
+            light_bind_group,
         }
     }
 
@@ -461,6 +488,7 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]); // Our texture right there
+            render_pass.set_bind_group(2, &self.light_bind_group, &[]); // <--- Bind the light
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
