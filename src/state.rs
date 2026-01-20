@@ -1,4 +1,6 @@
-use crate::{camera::CameraUniform, models::load_model, textures, vertex::Vertex};
+use crate::{
+    Camera, CameraController, camera::CameraUniform, models::load_model, textures, vertex::Vertex,
+};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
@@ -18,6 +20,8 @@ pub struct State {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
 
+    camera: Camera,
+    camera_controller: CameraController,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -25,8 +29,6 @@ pub struct State {
     #[allow(dead_code)] // We keep this for later use
     diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
-
-    start_time: std::time::Instant,
 }
 
 impl State {
@@ -112,8 +114,20 @@ impl State {
         let num_indices = model_indices.len() as u32;
 
         // 6. Camera
+        let camera = Camera {
+            eye: (0.0, 4.0, 4.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: glam::Vec3::Y,
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0_f32.to_radians(),
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let camera_controller = CameraController::new(0.1);
+
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(0.0, config.width as f32 / config.height as f32);
+        camera_uniform.update_view_proj(&camera);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -216,8 +230,15 @@ impl State {
                         wgpu::VertexAttribute {
                             offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                             shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x3,
+                        }, // Color
+                        wgpu::VertexAttribute {
+                            offset: (std::mem::size_of::<[f32; 3]>()
+                                + std::mem::size_of::<[f32; 3]>())
+                                as wgpu::BufferAddress,
+                            shader_location: 2,
                             format: wgpu::VertexFormat::Float32x2,
-                        }, // Attention: Float32x2 for the UVs !
+                        }, // Tex Coords
                     ],
                 }],
             },
@@ -261,12 +282,13 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
+            camera,
+            camera_controller,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
             diffuse_bind_group,
             depth_texture,
-            start_time: std::time::Instant::now(),
         }
     }
 
@@ -286,10 +308,19 @@ impl State {
         }
     }
 
+    pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+        // Check if it's a CursorMoved event for camera rotation
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            let pos = (position.x as f32, position.y as f32);
+            self.camera_controller
+                .process_mouse_movement(pos, &mut self.camera);
+        }
+        self.camera_controller.process_events(event)
+    }
+
     pub fn update(&mut self) {
-        let time = self.start_time.elapsed().as_secs_f32();
-        let aspect = self.config.width as f32 / self.config.height as f32;
-        self.camera_uniform.update_view_proj(time, aspect);
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
