@@ -31,6 +31,7 @@ fn main() {
                         Err(e) => eprintln!("{:?}", e),
                     }
                 }
+                ref event if state.input(event) => {}
                 _ => {}
             },
             Event::AboutToWait => state.window.request_redraw(),
