@@ -1,6 +1,6 @@
 // This file is for creating vertex which are uses for shaders
 
-#[repr(C)] // Force Rust to use C memory layout (crucial for GPU compatibility)
+#[repr(C)] // Force Rust to use C memory layout (crucial for GPU compatibility, thx Microslop)
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     /// Position of the vertex in x, y, z
@@ -11,6 +11,7 @@ pub struct Vertex {
     pub tex_coords: [f32; 2],
 }
 
+// TODO: useless for now
 pub const VERTICES: &[Vertex] = &[
     // 0. Top Left - Red
     Vertex {
@@ -38,6 +39,7 @@ pub const VERTICES: &[Vertex] = &[
     },
 ];
 
+// TODO: useless for now
 // The indices (Order to connect the dots)
 // We use u16 because we have few points. For huge models, use u32.
 pub const INDICES: &[u16] = &[
