@@ -8,3 +8,5 @@ mod textures;
 pub use textures::*;
 mod state;
 pub use state::*;
+mod instance;
+pub use instance::*;
