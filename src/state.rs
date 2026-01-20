@@ -1,5 +1,6 @@
 use crate::{
-    Camera, CameraController, camera::CameraUniform, models::load_model, textures, vertex::Vertex,
+    Camera, CameraController, Instance, InstanceRaw, camera::CameraUniform, models::load_model,
+    textures, vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -24,6 +25,9 @@ pub struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
 
     camera: Camera,
     camera_controller: CameraController,
@@ -105,6 +109,42 @@ impl State {
 
         // Model : We load from the given path
         let (model_vertices, model_indices) = load_model(model_path);
+
+        const NUM_INSTANCES_PER_ROW: u32 = 10;
+        const INSTANCE_DISPLACEMENT: glam::Vec3 = glam::Vec3::new(
+            NUM_INSTANCES_PER_ROW as f32 * 0.5,
+            0.0,
+            NUM_INSTANCES_PER_ROW as f32 * 0.5,
+        );
+
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let position = glam::Vec3::new(x as f32 * 3.0, 0.0, z as f32 * 3.0)
+                        - INSTANCE_DISPLACEMENT;
+
+                    let rotation = if position == glam::Vec3::ZERO {
+                        // No rotation for the center one
+                        glam::Quat::from_axis_angle(glam::Vec3::Z, 0.0)
+                    } else {
+                        // Rotate towards the origin
+                        glam::Quat::from_axis_angle(position.normalize(), 45.0f32.to_radians())
+                    };
+
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Prepare data for the GPU
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+
+        // Create the Instance Buffer
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
 
         // 5. Buffers
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -225,29 +265,34 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        }, // Color
-                        wgpu::VertexAttribute {
-                            offset: (std::mem::size_of::<[f32; 3]>()
-                                + std::mem::size_of::<[f32; 3]>())
-                                as wgpu::BufferAddress,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x2,
-                        }, // Tex Coords
-                    ],
-                }],
+                buffers: &[
+                    // 1. Tell the GPU to get the position, the color and the texture coords
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: (std::mem::size_of::<[f32; 3]>()
+                                    + std::mem::size_of::<[f32; 3]>())
+                                    as wgpu::BufferAddress,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                        ],
+                    },
+                    // 2. The Instance Layout (The Matrix lol)
+                    InstanceRaw::desc(),
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -297,6 +342,8 @@ impl State {
             diffuse_bind_group,
             depth_texture,
             right_mouse_pressed: false,
+            instances,
+            instance_buffer,
         }
     }
 
@@ -415,8 +462,9 @@ impl State {
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]); // Our texture right there
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
