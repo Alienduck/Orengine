@@ -11,7 +11,6 @@ fn main() {
             .unwrap(),
     );
 
-    // We pass the .obj file here! No more hardcoding in the engine.
     let mut state = pollster::block_on(State::new(window.clone(), "pizza.obj"));
 
     event_loop
@@ -31,8 +30,15 @@ fn main() {
                         Err(e) => eprintln!("{:?}", e),
                     }
                 }
+                ref event if state.input(event) => {}
                 _ => {}
             },
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => {
+                state.handle_mouse_motion(delta);
+            }
             Event::AboutToWait => state.window.request_redraw(),
             _ => {}
         })

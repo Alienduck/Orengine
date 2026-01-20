@@ -1,6 +1,13 @@
-use crate::{camera::CameraUniform, models::load_model, textures, vertex::Vertex};
+use crate::{
+    Camera, CameraController, camera::CameraUniform, models::load_model, textures, vertex::Vertex,
+};
 use wgpu::util::DeviceExt;
-use winit::{dpi::PhysicalSize, window::Window};
+use winit::{
+    dpi::PhysicalSize,
+    event::{ElementState, KeyEvent, WindowEvent},
+    keyboard::PhysicalKey,
+    window::Window,
+};
 
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
@@ -11,22 +18,24 @@ pub struct State {
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: PhysicalSize<u32>,
-    pub window: std::sync::Arc<Window>, // Public for winit event handling
+    pub window: std::sync::Arc<Window>,
 
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
 
+    camera: Camera,
+    camera_controller: CameraController,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
-    #[allow(dead_code)] // We keep this for later use
+    #[allow(dead_code)]
     diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
 
-    start_time: std::time::Instant,
+    right_mouse_pressed: bool,
 }
 
 impl State {
@@ -112,8 +121,20 @@ impl State {
         let num_indices = model_indices.len() as u32;
 
         // 6. Camera
+        let camera = Camera {
+            eye: (0.0, 1.0, 5.0).into(),
+            target: (0.0, 1.0, 0.0).into(),
+            up: glam::Vec3::Y,
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0_f32.to_radians(),
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let camera_controller = CameraController::new(0.01);
+
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(0.0, config.width as f32 / config.height as f32);
+        camera_uniform.update_view_proj(&camera);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -216,8 +237,15 @@ impl State {
                         wgpu::VertexAttribute {
                             offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                             shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x3,
+                        }, // Color
+                        wgpu::VertexAttribute {
+                            offset: (std::mem::size_of::<[f32; 3]>()
+                                + std::mem::size_of::<[f32; 3]>())
+                                as wgpu::BufferAddress,
+                            shader_location: 2,
                             format: wgpu::VertexFormat::Float32x2,
-                        }, // Attention: Float32x2 for the UVs !
+                        }, // Tex Coords
                     ],
                 }],
             },
@@ -261,12 +289,14 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
+            camera,
+            camera_controller,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
             diffuse_bind_group,
             depth_texture,
-            start_time: std::time::Instant::now(),
+            right_mouse_pressed: false,
         }
     }
 
@@ -286,10 +316,54 @@ impl State {
         }
     }
 
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state,
+                        physical_key: PhysicalKey::Code(keycode),
+                        ..
+                    },
+                ..
+            } => self.camera_controller.process_keyboard(*keycode, *state),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                self.right_mouse_pressed = true;
+                let _ = self
+                    .window
+                    .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                self.window.set_cursor_visible(false);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                self.right_mouse_pressed = false;
+                let _ = self
+                    .window
+                    .set_cursor_grab(winit::window::CursorGrabMode::None);
+                self.window.set_cursor_visible(true);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
+        if self.right_mouse_pressed {
+            self.camera_controller.process_mouse(delta.0, delta.1);
+        }
+    }
+
     pub fn update(&mut self) {
-        let time = self.start_time.elapsed().as_secs_f32();
-        let aspect = self.config.width as f32 / self.config.height as f32;
-        self.camera_uniform.update_view_proj(time, aspect);
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
