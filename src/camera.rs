@@ -23,6 +23,7 @@ impl Camera {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    view_pos: [f32; 4],
 }
 
 impl CameraUniform {
@@ -30,11 +31,14 @@ impl CameraUniform {
         use glam::Mat4;
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            view_pos: [0.0; 4],
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
+        // We use [x, y, z, 1.0] to align with 16 bytes (vec4)
+        self.view_pos = [camera.eye.x, camera.eye.y, camera.eye.z, 1.0];
     }
 }
 

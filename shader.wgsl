@@ -1,6 +1,7 @@
 // Input from the Vertex Buffer
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    view_pos: vec4<f32>,
 };
 
 // Get Bind Group 0, Binding 0
@@ -88,13 +89,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 3. Diffuse light (Directional light)
     let light_dir = normalize(light.position - in.world_position);
     let normal = normalize(in.world_normal);
-    
-    // Dot product: 1.0 if facing light, 0.0 if 90 degrees, < 0 if backfacing
     let diffuse_strength = max(dot(normal, light_dir), 0.0);
     let diffuse_color = light.color * diffuse_strength;
 
-    // 4. Combine
-    let final_color = (ambient_color + diffuse_color) * object_color.xyz;
+    // Specular highlight (Shiny spots)
+    let view_dir = normalize(camera.view_pos.xyz - in.world_position);
+    let reflect_dir = reflect(-light_dir, normal);
 
-    return vec4<f32>(final_color, object_color.a);
+    // Shininess: Higher = smaller, sharper highlight (e.g., 32.0 or 64.0)
+    let shininess = 32.0; 
+    let specular_strength = 0.5;
+
+    // Calculate the highlight
+    let spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+    let specular_color = light.color * spec * specular_strength;
+
+    // Combine everything
+    let result = (ambient_color + diffuse_color + specular_color) * object_color.xyz;
+
+    return vec4<f32>(result, object_color.a);
 }
