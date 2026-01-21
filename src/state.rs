@@ -1,5 +1,5 @@
 use crate::{
-    Camera, CameraController, Instance, InstanceRaw, LightUniform, camera::CameraUniform,
+    Camera, CameraController, Gui, Instance, InstanceRaw, LightUniform, camera::CameraUniform,
     models::load_model, textures, vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
@@ -20,6 +20,8 @@ pub struct State {
     pub config: wgpu::SurfaceConfiguration,
     pub size: PhysicalSize<u32>,
     pub window: std::sync::Arc<Window>,
+    pub gui: Gui,
+    pub light_uniform: LightUniform,
 
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -42,7 +44,6 @@ pub struct State {
     right_mouse_pressed: bool,
 
     #[allow(dead_code)]
-    light_uniform: LightUniform,
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
 }
@@ -347,6 +348,8 @@ impl State {
             multiview: None,
         });
 
+        let gui = Gui::new(&window, &device, config.format);
+
         Self {
             surface,
             device,
@@ -371,6 +374,7 @@ impl State {
             light_uniform,
             light_buffer,
             light_bind_group,
+            gui,
         }
     }
 
@@ -391,6 +395,10 @@ impl State {
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
+        if self.gui.handle_event(&self.window, event) {
+            return true; // If the GUI consumed the event, do not process it further
+        }
+
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -495,9 +503,45 @@ impl State {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
+        self.gui.render(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &self.window,
+            &view,
+            |ctx| {
+                // Here goes our custom UI
+                egui::Window::new("Inspector").show(ctx, |ui| {
+                    ui.heading("Light Settings");
+
+                    // Control the position
+                    ui.label("Position X");
+                    ui.add(egui::Slider::new(
+                        &mut self.light_uniform.position[0],
+                        -10.0..=10.0,
+                    ));
+
+                    // Control the color
+                    ui.label("Color");
+                    let mut color = [
+                        self.light_uniform.color[0],
+                        self.light_uniform.color[1],
+                        self.light_uniform.color[2],
+                    ];
+                    ui.color_edit_button_rgb(&mut color);
+                    self.light_uniform.color = color; // Update the light color
+                });
+            },
+        );
+
+        self.queue.write_buffer(
+            &self.light_buffer,
+            0,
+            bytemuck::cast_slice(&[self.light_uniform]),
+        );
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
         Ok(())
     }
 }
