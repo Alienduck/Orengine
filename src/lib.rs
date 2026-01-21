@@ -12,3 +12,5 @@ mod instance;
 pub use instance::*;
 mod light;
 pub use light::*;
+mod gui;
+pub use gui::*;
