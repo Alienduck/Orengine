@@ -1,26 +1,21 @@
-use crate::vertex::Vertex;
+use crate::{error::Result, vertex::Vertex};
 use std::path::Path;
-use tobj;
 
-pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
+pub fn load_model(file_name: &str) -> Result<(Vec<Vertex>, Vec<u32>)> {
     let path = Path::new("assets").join(file_name);
 
     // 1. Load the OBJ file
-    // triangulate: true -> ensure we only have triangles (no squares/ngons)
-    // single_index: true -> unifies indices for pos/norm/texcoord (easier for wgpu)
     let load_options = tobj::LoadOptions {
         triangulate: true,
         single_index: true,
         ..Default::default()
     };
 
-    let (models, materials) =
-        tobj::load_obj(&path, &load_options).expect("Failed to load 3D model");
+    let (models, materials) = tobj::load_obj(&path, &load_options)?;
 
-    let _materials = materials.expect("Failed to load OBJ");
+    let _materials = materials?;
 
-    // We assume the file contains only one object (the pizza)
-    // If there are multiple, we take the first one
+    // We assume the file contains only one object
     let mesh = &models[0].mesh;
 
     // 2. Convert positions to our Vertex format
@@ -28,8 +23,7 @@ pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
 
     // Positions are flat: [x, y, z, x, y, z, ...]
     for i in 0..mesh.positions.len() / 3 {
-        // Handle missing texture coordinates by defaulting to (0.0, 0.0)
-        let tex_coords = if mesh.texcoords.len() >= (i + 1) * 2 {
+        let tex_coords = if mesh.texcoords.len() > i * 2 {
             [
                 mesh.texcoords[i * 2],
                 1.0 - mesh.texcoords[i * 2 + 1], // Flip V (Y) for wgpu
@@ -38,8 +32,7 @@ pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
             [0.0, 0.0]
         };
 
-        // Handle missing normals by using a default
-        let normal = if mesh.normals.len() >= (i + 1) * 3 {
+        let normal = if mesh.normals.len() > i * 3 {
             [
                 mesh.normals[i * 3],
                 mesh.normals[i * 3 + 1],
@@ -55,15 +48,28 @@ pub fn load_model(file_name: &str) -> (Vec<Vertex>, Vec<u32>) {
                 mesh.positions[i * 3 + 1],
                 mesh.positions[i * 3 + 2],
             ],
-            // White color since OBJ has no vertex color usually
             color: [1.0, 1.0, 1.0],
             tex_coords,
             normal,
         });
     }
 
-    // 3. Get indices directly (convert to u32 just in case)
+    // 3. Get indices directly
     let indices: Vec<u32> = mesh.indices.clone();
 
-    (vertices, indices)
+    Ok((vertices, indices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::OrengineError;
+
+    #[test]
+    fn test_load_model_not_found() {
+        let result = load_model("non_existent_model.obj");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OrengineError::Tobj(_)));
+    }
 }
