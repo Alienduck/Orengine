@@ -1,8 +1,10 @@
+use crate::error::Result;
 use image::GenericImageView;
 use std::path::Path;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+#[derive(Debug)]
 pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -59,8 +61,8 @@ impl Texture {
         queue: &wgpu::Queue,
         path: &Path,
         label: Option<&str>,
-    ) -> Self {
-        let img = image::open(path).expect("Impossible d'ouvrir l'image");
+    ) -> Result<Self> {
+        let img = image::open(path)?;
         let rgba = img.to_rgba8();
         let dimensions = img.dimensions();
 
@@ -108,10 +110,38 @@ impl Texture {
             ..Default::default()
         });
 
-        Self {
+        Ok(Self {
             texture,
             view,
             sampler,
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::OrengineError;
+    use std::path::Path;
+
+    #[test]
+    fn test_texture_load_not_found() {
+        let (device, queue) = pollster::block_on(async {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .unwrap();
+            adapter
+                .request_device(&wgpu::DeviceDescriptor::default(), None)
+                .await
+                .unwrap()
+        });
+
+        let result =
+            Texture::from_image(&device, &queue, Path::new("non_existent_texture.png"), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OrengineError::Image(_)));
     }
 }
