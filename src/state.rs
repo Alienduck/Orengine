@@ -30,6 +30,7 @@ pub struct State {
     pub light_uniform: LightUniform,
 
     render_pipeline: wgpu::RenderPipeline,
+    render_target: textures::Texture,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
@@ -343,7 +344,12 @@ impl State {
             multiview: None,
         });
 
-        let gui = Gui::new(&window, &device, config.format);
+        let render_target =
+            crate::textures::Texture::create_render_target(&device, &config, "Render Target");
+
+        let mut gui = Gui::new(&window, &device, config.format);
+
+        gui.register_viewport_texture(&device, &render_target.view, config.format);
 
         Ok(Self {
             surface,
@@ -353,6 +359,7 @@ impl State {
             size,
             window,
             render_pipeline,
+            render_target,
             vertex_buffer,
             index_buffer,
             num_indices,
@@ -380,8 +387,16 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            self.depth_texture =
-                textures::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.render_target = crate::textures::Texture::create_render_target(
+                &self.device,
+                &self.config,
+                "Render Target",
+            );
+            self.depth_texture = textures::Texture::create_depth_texture(
+                &self.device,
+                &self.config,
+                "depth_texture",
+            );
         }
     }
 
@@ -444,9 +459,9 @@ impl State {
         );
     }
 
-    pub fn render(&mut self) -> std::result::Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<()> {
         let output = self.surface.get_current_texture()?;
-        let view = output
+        let view_surface = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -455,12 +470,12 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
-
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("3D Render Pass"),
+                // CIBLE : render_target.view (PAS l'écran !)
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.render_target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -494,42 +509,38 @@ impl State {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
+        let viewport_texture_id = self.gui.viewport_texture_id;
         self.gui.render(
             &self.device,
             &self.queue,
             &mut encoder,
             &self.window,
-            &view,
+            &view_surface,
             |ctx| {
-                egui::Window::new("Inspector").show(ctx, |ui| {
-                    ui.heading("Light Settings");
 
-                    ui.label("Position X");
-                    ui.add(egui::Slider::new(
-                        &mut self.light_uniform.position[0],
-                        -10.0..=10.0,
-                    ));
+                egui::SidePanel::left("Hierarchy").show(ctx, |ui| {
+                    ui.label("Liste des objets...");
+                });
+                egui::SidePanel::right("Inspector").show(ctx, |ui| {
+                    ui.label("Propriétés...");
+                });
 
-                    ui.label("Color");
-                    let mut color = [
-                        self.light_uniform.color[0],
-                        self.light_uniform.color[1],
-                        self.light_uniform.color[2],
-                    ];
-                    ui.color_edit_button_rgb(&mut color);
-                    self.light_uniform.color = color;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(texture_id) = viewport_texture_id {
+                        ui.image(egui::load::SizedTexture::new(
+                            texture_id,
+                            ui.available_size(),
+                        ));
+                    } else {
+                        ui.label("Erreur: Texture de scène non disponible");
+                    }
                 });
             },
         );
 
-        self.queue.write_buffer(
-            &self.light_buffer,
-            0,
-            bytemuck::cast_slice(&[self.light_uniform]),
-        );
-
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
         Ok(())
     }
 }
