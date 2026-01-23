@@ -10,7 +10,7 @@ pub enum OrengineError {
 
     #[error("Tobj model loading error")]
     Tobj(#[from] tobj::LoadError),
-    
+
     #[error("Image loading error")]
     Image(#[from] image::ImageError),
 
@@ -25,6 +25,9 @@ pub enum OrengineError {
 
     #[error("Mismatched material count in model")]
     MismatchedMaterials,
+
+    #[error("Surface error: {0}")]
+    SurfaceError(#[from] wgpu::SurfaceError),
 }
 
 pub type Result<T> = std::result::Result<T, OrengineError>;
