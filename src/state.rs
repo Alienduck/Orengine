@@ -1,6 +1,12 @@
 use crate::{
-    Camera, CameraController, Gui, Instance, InstanceRaw, LightUniform, camera::CameraUniform,
-    models::load_model, textures, vertex::Vertex,
+    camera::{Camera, CameraController, CameraUniform},
+    error::{OrengineError, Result},
+    gui::Gui,
+    instance::{Instance, InstanceRaw},
+    light::LightUniform,
+    models::load_model,
+    textures,
+    vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -50,7 +56,7 @@ pub struct State {
 
 impl State {
     // We pass the mode path as parameter now
-    pub async fn new(window: std::sync::Arc<Window>, model_path: &str) -> Self {
+    pub async fn new(window: std::sync::Arc<Window>, model_path: &str) -> Result<Self> {
         let size = window.inner_size();
 
         // 1. Instance & Surface
@@ -59,7 +65,7 @@ impl State {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance.create_surface(window.clone())?;
 
         // 2. Adapte Device & Queue
         let adapter = instance
@@ -69,7 +75,7 @@ impl State {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .ok_or(OrengineError::NoGpuAdapter)?;
 
         let (device, queue) = adapter
             .request_device(
@@ -80,8 +86,7 @@ impl State {
                 },
                 None,
             )
-            .await
-            .unwrap();
+            .await?;
 
         // 3. Config
         let surface_caps = surface.get_capabilities(&adapter);
@@ -111,10 +116,10 @@ impl State {
             &queue,
             std::path::Path::new("assets/pizzaTxt.png"),
             Some("Pizza Texture"),
-        );
+        )?;
 
         // Model : We load from the given path
-        let (model_vertices, model_indices) = load_model(model_path);
+        let (model_vertices, model_indices) = load_model(model_path)?;
 
         const NUM_INSTANCES_PER_ROW: u32 = 10;
         const INSTANCE_DISPLACEMENT: glam::Vec3 = glam::Vec3::new(
@@ -130,10 +135,8 @@ impl State {
                         - INSTANCE_DISPLACEMENT;
 
                     let rotation = if position == glam::Vec3::ZERO {
-                        // No rotation for the center one
                         glam::Quat::from_axis_angle(glam::Vec3::Z, 0.0)
                     } else {
-                        // Rotate towards the origin
                         glam::Quat::from_axis_angle(position.normalize(), 45.0f32.to_radians())
                     };
 
@@ -142,10 +145,7 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        // Prepare data for the GPU
         let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
-
-        // Create the Instance Buffer
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
@@ -192,7 +192,7 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, // Make it visible to both shaders
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -256,9 +256,9 @@ impl State {
             textures::Texture::create_depth_texture(&device, &config, "depth_texture");
 
         let light_uniform = crate::light::LightUniform {
-            position: [2.0, 2.0, 2.0], // Positioned above and to the right
+            position: [2.0, 2.0, 2.0],
             _padding: 0,
-            color: [1.0, 0.0, 0.0], // White light
+            color: [1.0, 0.0, 0.0],
             _padding2: 0,
         };
 
@@ -312,12 +312,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[
-                    // 1. Vertex layout (position, color, tex_coords, normal)
-                    Vertex::desc(),
-                    // 2. Instance layout (model matrix)
-                    InstanceRaw::desc(),
-                ],
+                buffers: &[Vertex::desc(), InstanceRaw::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -350,7 +345,7 @@ impl State {
 
         let gui = Gui::new(&window, &device, config.format);
 
-        Self {
+        Ok(Self {
             surface,
             device,
             queue,
@@ -375,7 +370,7 @@ impl State {
             light_buffer,
             light_bind_group,
             gui,
-        }
+        })
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -385,18 +380,14 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            // Recreate depth texture
-            self.depth_texture = textures::Texture::create_depth_texture(
-                &self.device,
-                &self.config,
-                "depth_texture",
-            );
+            self.depth_texture =
+                textures::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         if self.gui.handle_event(&self.window, event) {
-            return true; // If the GUI consumed the event, do not process it further
+            return true;
         }
 
         match event {
@@ -453,7 +444,7 @@ impl State {
         );
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> std::result::Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -495,8 +486,8 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]); // Our texture right there
-            render_pass.set_bind_group(2, &self.light_bind_group, &[]); // <--- Bind the light
+            render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.light_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -510,18 +501,15 @@ impl State {
             &self.window,
             &view,
             |ctx| {
-                // Here goes our custom UI
                 egui::Window::new("Inspector").show(ctx, |ui| {
                     ui.heading("Light Settings");
 
-                    // Control the position
                     ui.label("Position X");
                     ui.add(egui::Slider::new(
                         &mut self.light_uniform.position[0],
                         -10.0..=10.0,
                     ));
 
-                    // Control the color
                     ui.label("Color");
                     let mut color = [
                         self.light_uniform.color[0],
@@ -529,7 +517,7 @@ impl State {
                         self.light_uniform.color[2],
                     ];
                     ui.color_edit_button_rgb(&mut color);
-                    self.light_uniform.color = color; // Update the light color
+                    self.light_uniform.color = color;
                 });
             },
         );

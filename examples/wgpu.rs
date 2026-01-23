@@ -3,15 +3,22 @@ use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
 
 fn main() {
     env_logger::init();
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
     let window = std::sync::Arc::new(
         WindowBuilder::new()
             .with_title("Orengine")
             .build(&event_loop)
-            .unwrap(),
+            .expect("Failed to create window"),
     );
 
-    let mut state = pollster::block_on(State::new(window.clone(), "pizza.obj"));
+    let mut state = match pollster::block_on(State::new(window.clone(), "pizza.obj")) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to create Orengine state: {}", e);
+            // We can't recover from this, so exit
+            std::process::exit(1);
+        }
+    };
 
     event_loop
         .run(move |event, target| match event {

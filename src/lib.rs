@@ -1,3 +1,4 @@
+pub mod error;
 mod vertex;
 pub use vertex::*;
 mod camera;
