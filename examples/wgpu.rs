@@ -32,8 +32,12 @@ fn main() {
                     state.update();
                     match state.render() {
                         Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                        Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+                        Err(orengine::error::OrengineError::SurfaceError(
+                            wgpu::SurfaceError::OutOfMemory,
+                        )) => target.exit(),
+                        Err(orengine::error::OrengineError::SurfaceError(_)) => {
+                            state.resize(state.size)
+                        }
                         Err(e) => eprintln!("{:?}", e),
                     }
                 }
