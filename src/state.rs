@@ -397,12 +397,21 @@ impl State {
                 &self.config,
                 "depth_texture",
             );
+            self.gui
+                .update_viewport_texture(&self.device, &self.render_target.view);
         }
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        if self.gui.handle_event(&self.window, event) {
-            return true;
+        let consumed = self.gui.handle_event(&self.window, event);
+
+        // We process camera controls unless egui needs the input.
+        // This allows right-clicking on the viewport to control the camera.
+        let egui_wants_input =
+            self.gui.context.wants_pointer_input() || self.gui.context.wants_keyboard_input();
+
+        if egui_wants_input {
+            return consumed;
         }
 
         match event {
@@ -416,27 +425,22 @@ impl State {
                 ..
             } => self.camera_controller.process_keyboard(*keycode, *state),
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
+                state,
                 button: winit::event::MouseButton::Right,
                 ..
             } => {
-                self.right_mouse_pressed = true;
-                let _ = self
-                    .window
-                    .set_cursor_grab(winit::window::CursorGrabMode::Confined);
-                self.window.set_cursor_visible(false);
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: winit::event::MouseButton::Right,
-                ..
-            } => {
-                self.right_mouse_pressed = false;
-                let _ = self
-                    .window
-                    .set_cursor_grab(winit::window::CursorGrabMode::None);
-                self.window.set_cursor_visible(true);
+                self.right_mouse_pressed = *state == ElementState::Pressed;
+                if self.right_mouse_pressed {
+                    let _ = self
+                        .window
+                        .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                    self.window.set_cursor_visible(false);
+                } else {
+                    let _ = self
+                        .window
+                        .set_cursor_grab(winit::window::CursorGrabMode::None);
+                    self.window.set_cursor_visible(true);
+                }
                 true
             }
             _ => false,
@@ -470,10 +474,10 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3D Render Pass"),
-                // CIBLE : render_target.view (PAS l'écran !)
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.render_target.view,
                     resolve_target: None,
@@ -509,7 +513,11 @@ impl State {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
-        let viewport_texture_id = self.gui.viewport_texture_id;
+        let texture_id = self.gui.viewport_texture_id;
+
+        let mut temp_light_position = self.light_uniform.position;
+        let mut temp_light_color = self.light_uniform.color;
+
         self.gui.render(
             &self.device,
             &self.queue,
@@ -517,25 +525,45 @@ impl State {
             &self.window,
             &view_surface,
             |ctx| {
-
-                egui::SidePanel::left("Hierarchy").show(ctx, |ui| {
-                    ui.label("Liste des objets...");
+                egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+                    egui::menu::bar(ui, |ui| {
+                        ui.menu_button("Fichier", |_| {});
+                    });
                 });
-                egui::SidePanel::right("Inspector").show(ctx, |ui| {
-                    ui.label("Propriétés...");
+                egui::SidePanel::left("hierarchy").show(ctx, |ui| {
+                    ui.label("Scène 3D");
+                    ui.separator();
+                    ui.label("Pizzas (x100)");
+                });
+
+                egui::SidePanel::right("inspector").show(ctx, |ui| {
+                    ui.heading("Lumière");
+                    ui.add(egui::Slider::new(&mut temp_light_position[0], -10.0..=10.0).text("X"));
+                    ui.add(egui::Slider::new(&mut temp_light_position[1], -10.0..=10.0).text("Y"));
+                    ui.add(egui::Slider::new(&mut temp_light_position[2], -10.0..=10.0).text("Z"));
+
+                    ui.separator();
+                    ui.label("Couleur");
+                    ui.color_edit_button_rgb(&mut temp_light_color);
                 });
 
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    if let Some(texture_id) = viewport_texture_id {
-                        ui.image(egui::load::SizedTexture::new(
-                            texture_id,
-                            ui.available_size(),
-                        ));
+                    if let Some(id) = texture_id {
+                        ui.image(egui::load::SizedTexture::new(id, ui.available_size()));
                     } else {
-                        ui.label("Erreur: Texture de scène non disponible");
+                        ui.label("Chargement de la texture...");
                     }
                 });
             },
+        );
+
+        self.light_uniform.position = temp_light_position;
+        self.light_uniform.color = temp_light_color;
+
+        self.queue.write_buffer(
+            &self.light_buffer,
+            0,
+            bytemuck::cast_slice(&[self.light_uniform]),
         );
 
         self.queue.submit(std::iter::once(encoder.finish()));
