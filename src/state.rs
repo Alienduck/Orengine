@@ -1,7 +1,8 @@
 use crate::{
-    camera::{Camera, CameraController, CameraUniform},
+    camera::{Camera, CameraUniform},
     error::{OrengineError, Result},
     gui::Gui,
+    input::InputHandler,
     instance::{Instance, InstanceRaw},
     light::LightUniform,
     models::load_model,
@@ -9,12 +10,7 @@ use crate::{
     vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
-use winit::{
-    dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
-    keyboard::PhysicalKey,
-    window::Window,
-};
+use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
@@ -39,7 +35,7 @@ pub struct State {
     instance_buffer: wgpu::Buffer,
 
     camera: Camera,
-    camera_controller: CameraController,
+    input_handler: InputHandler,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -48,7 +44,7 @@ pub struct State {
     diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
 
-    right_mouse_pressed: bool,
+    is_scene_hovered: bool,
 
     #[allow(dead_code)]
     light_buffer: wgpu::Buffer,
@@ -178,7 +174,7 @@ impl State {
             zfar: 100.0,
         };
 
-        let camera_controller = CameraController::new(0.01);
+        let input_handler = InputHandler::new(0.01);
 
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
@@ -364,13 +360,13 @@ impl State {
             index_buffer,
             num_indices,
             camera,
-            camera_controller,
+            input_handler,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
             diffuse_bind_group,
             depth_texture,
-            right_mouse_pressed: false,
+            is_scene_hovered: false,
             instances,
             instance_buffer,
             light_uniform,
@@ -405,56 +401,21 @@ impl State {
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         let consumed = self.gui.handle_event(&self.window, event);
 
-        // We process camera controls unless egui needs the input.
-        // This allows right-clicking on the viewport to control the camera.
-        let egui_wants_input =
-            self.gui.context.wants_pointer_input() || self.gui.context.wants_keyboard_input();
+        let handled =
+            self.input_handler
+                .process_input(event, &self.window, consumed, self.is_scene_hovered);
 
-        if egui_wants_input {
-            return consumed;
-        }
-
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state,
-                        physical_key: PhysicalKey::Code(keycode),
-                        ..
-                    },
-                ..
-            } => self.camera_controller.process_keyboard(*keycode, *state),
-            WindowEvent::MouseInput {
-                state,
-                button: winit::event::MouseButton::Right,
-                ..
-            } => {
-                self.right_mouse_pressed = *state == ElementState::Pressed;
-                if self.right_mouse_pressed {
-                    let _ = self
-                        .window
-                        .set_cursor_grab(winit::window::CursorGrabMode::Confined);
-                    self.window.set_cursor_visible(false);
-                } else {
-                    let _ = self
-                        .window
-                        .set_cursor_grab(winit::window::CursorGrabMode::None);
-                    self.window.set_cursor_visible(true);
-                }
-                true
-            }
-            _ => false,
-        }
+        consumed || handled
     }
 
     pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
-        if self.right_mouse_pressed {
-            self.camera_controller.process_mouse(delta.0, delta.1);
-        }
+        self.input_handler.handle_mouse_motion(delta);
     }
 
     pub fn update(&mut self) {
-        self.camera_controller.update_camera(&mut self.camera);
+        self.input_handler
+            .camera_controller
+            .update_camera(&mut self.camera);
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -518,6 +479,8 @@ impl State {
         let mut temp_light_position = self.light_uniform.position;
         let mut temp_light_color = self.light_uniform.color;
 
+        let mut is_scene_hovered = self.is_scene_hovered;
+
         self.gui.render(
             &self.device,
             &self.queue,
@@ -549,13 +512,17 @@ impl State {
 
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if let Some(id) = texture_id {
-                        ui.image(egui::load::SizedTexture::new(id, ui.available_size()));
+                        let response =
+                            ui.image(egui::load::SizedTexture::new(id, ui.available_size()));
+                        is_scene_hovered = response.hovered();
                     } else {
                         ui.label("Chargement de la texture...");
                     }
                 });
             },
         );
+
+        self.is_scene_hovered = is_scene_hovered;
 
         self.light_uniform.position = temp_light_position;
         self.light_uniform.color = temp_light_color;
