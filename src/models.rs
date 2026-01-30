@@ -1,7 +1,35 @@
 use crate::{error::Result, vertex::Vertex};
-use std::path::Path;
+use std::{fmt::Debug, path::Path};
 
-pub fn load_model(file_name: &str) -> Result<(Vec<Vertex>, Vec<u32>)> {
+#[derive(Debug)]
+pub struct Material {
+    pub name: String,
+    pub diffuse_texture: String,
+}
+
+#[derive(Debug)]
+pub struct Mesh {
+    pub name: String,
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub material_id: usize,
+}
+
+pub struct Model {
+    pub meshes: Vec<Mesh>,
+    pub materials: Vec<Material>,
+}
+
+impl Debug for Model {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Model")
+            .field("meshes", &self.meshes)
+            .field("materials", &self.materials)
+            .finish()
+    }
+}
+
+pub fn load_model(file_name: &str) -> Result<Model> {
     let path = Path::new("assets").join(file_name);
 
     // 1. Load the OBJ file
@@ -13,51 +41,68 @@ pub fn load_model(file_name: &str) -> Result<(Vec<Vertex>, Vec<u32>)> {
 
     let (models, materials) = tobj::load_obj(&path, &load_options)?;
 
-    let _materials = materials?;
+    let materials = materials?;
 
-    // We assume the file contains only one object
-    let mesh = &models[0].mesh;
-
-    // 2. Convert positions to our Vertex format
-    let mut vertices = Vec::new();
-
-    // Positions are flat: [x, y, z, x, y, z, ...]
-    for i in 0..mesh.positions.len() / 3 {
-        let tex_coords = if mesh.texcoords.len() > i * 2 {
-            [
-                mesh.texcoords[i * 2],
-                1.0 - mesh.texcoords[i * 2 + 1], // Flip V (Y) for wgpu
-            ]
-        } else {
-            [0.0, 0.0]
-        };
-
-        let normal = if mesh.normals.len() > i * 3 {
-            [
-                mesh.normals[i * 3],
-                mesh.normals[i * 3 + 1],
-                mesh.normals[i * 3 + 2],
-            ]
-        } else {
-            [0.0, 1.0, 0.0] // Default upward normal
-        };
-
-        vertices.push(Vertex {
-            position: [
-                mesh.positions[i * 3],
-                mesh.positions[i * 3 + 1],
-                mesh.positions[i * 3 + 2],
-            ],
-            color: [1.0, 1.0, 1.0],
-            tex_coords,
-            normal,
+    // Convert materials
+    let mut out_materials = Vec::new();
+    for mat in materials {
+        out_materials.push(Material {
+            name: mat.name,
+            diffuse_texture: mat.diffuse_texture.unwrap_or_default(),
         });
     }
 
-    // 3. Get indices directly
-    let indices: Vec<u32> = mesh.indices.clone();
+    // Convert meshes
+    let mut out_meshes = Vec::new();
+    for m in models {
+        let mesh = m.mesh;
+        let mut vertices = Vec::new();
 
-    Ok((vertices, indices))
+        // Positions are flat: [x, y, z, x, y, z, ...]
+        for i in 0..mesh.positions.len() / 3 {
+            let tex_coords = if mesh.texcoords.len() > i * 2 {
+                [
+                    mesh.texcoords[i * 2],
+                    1.0 - mesh.texcoords[i * 2 + 1], // Flip V (Y) for wgpu
+                ]
+            } else {
+                [0.0, 0.0]
+            };
+
+            let normal = if mesh.normals.len() > i * 3 {
+                [
+                    mesh.normals[i * 3],
+                    mesh.normals[i * 3 + 1],
+                    mesh.normals[i * 3 + 2],
+                ]
+            } else {
+                [0.0, 1.0, 0.0] // Default upward normal
+            };
+
+            vertices.push(Vertex {
+                position: [
+                    mesh.positions[i * 3],
+                    mesh.positions[i * 3 + 1],
+                    mesh.positions[i * 3 + 2],
+                ],
+                color: [1.0, 1.0, 1.0],
+                tex_coords,
+                normal,
+            });
+        }
+
+        out_meshes.push(Mesh {
+            name: m.name,
+            vertices,
+            indices: mesh.indices,
+            material_id: mesh.material_id.unwrap_or(0),
+        });
+    }
+
+    Ok(Model {
+        meshes: out_meshes,
+        materials: out_materials,
+    })
 }
 
 #[cfg(test)]
