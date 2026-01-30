@@ -11,7 +11,7 @@ fn main() {
             .expect("Failed to create window"),
     );
 
-    let mut state = match pollster::block_on(State::new(window.clone(), "pizza.obj")) {
+    let mut state = match pollster::block_on(State::new(window.clone(), "drone_costum.obj")) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create Orengine state: {}", e);
