@@ -12,6 +12,19 @@ use crate::{
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
+pub struct MeshRenderData {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub num_elements: u32,
+    pub material_id: usize,
+}
+
+pub struct MaterialRenderData {
+    pub bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
+    pub texture: textures::Texture,
+}
+
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
 /// and handling the rendering loop.
@@ -27,9 +40,8 @@ pub struct State {
 
     render_pipeline: wgpu::RenderPipeline,
     render_target: textures::Texture,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    meshes: Vec<MeshRenderData>,
+    materials: Vec<MaterialRenderData>,
 
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
@@ -41,7 +53,6 @@ pub struct State {
     camera_bind_group: wgpu::BindGroup,
 
     #[allow(dead_code)]
-    diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
 
     is_scene_hovered: bool,
@@ -106,17 +117,8 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // 4. Assets (Texture & Model)
-        // Texture (hardcoded for now)
-        let texture = textures::Texture::from_image(
-            &device,
-            &queue,
-            std::path::Path::new("assets/pizzaTxt.png"),
-            Some("Pizza Texture"),
-        )?;
-
-        // Model : We load from the given path
-        let (model_vertices, model_indices) = load_model(model_path)?;
+        // 4. Assets (Model & Textures)
+        let model = load_model(model_path)?;
 
         const NUM_INSTANCES_PER_ROW: u32 = 10;
         const INSTANCE_DISPLACEMENT: glam::Vec3 = glam::Vec3::new(
@@ -148,20 +150,6 @@ impl State {
             contents: bytemuck::cast_slice(&instance_data),
             usage: wgpu::BufferUsages::VERTEX,
         });
-
-        // 5. Buffers
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&model_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&model_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let num_indices = model_indices.len() as u32;
 
         // 6. Camera
         let camera = Camera {
@@ -209,7 +197,7 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        // 7. Texture Bind Group
+        // 7. Texture Bind Group Layout
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -233,20 +221,78 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
-                },
-            ],
-            label: Some("diffuse_bind_group"),
-        });
+        // Process Materials
+        let mut materials = Vec::new();
+        for mat in &model.materials {
+            let texture_path = std::path::Path::new("assets").join(&mat.diffuse_texture);
+
+            let texture = if !mat.diffuse_texture.is_empty() {
+                textures::Texture::from_image(&device, &queue, &texture_path, Some(&mat.name))
+                    .unwrap_or_else(|_| {
+                        eprintln!(
+                            "Erreur chargement texture: {:?}. Utilisation texture magenta.",
+                            texture_path
+                        );
+                        textures::Texture::from_color(
+                            &device,
+                            &queue,
+                            [255, 0, 255, 255],
+                            Some(&mat.name),
+                        )
+                    })
+            } else {
+                textures::Texture::from_color(
+                    &device,
+                    &queue,
+                    [255, 255, 255, 255],
+                    Some(&mat.name),
+                )
+            };
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&texture.sampler),
+                    },
+                ],
+                label: Some(&mat.name),
+            });
+
+            materials.push(MaterialRenderData {
+                bind_group,
+                texture,
+            });
+        }
+
+        // Process Meshes
+        let meshes = model
+            .meshes
+            .iter()
+            .map(|m| {
+                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{:?} Vertex Buffer", m.name)),
+                    contents: bytemuck::cast_slice(&m.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{:?} Index Buffer", m.name)),
+                    contents: bytemuck::cast_slice(&m.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                MeshRenderData {
+                    vertex_buffer,
+                    index_buffer,
+                    num_elements: m.indices.len() as u32,
+                    material_id: m.material_id,
+                }
+            })
+            .collect::<Vec<_>>();
 
         // 8. Depth Texture
         let depth_texture =
@@ -356,15 +402,13 @@ impl State {
             window,
             render_pipeline,
             render_target,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
+            meshes,
+            materials,
             camera,
             input_handler,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            diffuse_bind_group,
             depth_texture,
             is_scene_hovered: false,
             instances,
@@ -466,12 +510,18 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]);
             render_pass.set_bind_group(2, &self.light_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
+
+            for mesh in &self.meshes {
+                let material = &self.materials[mesh.material_id];
+                render_pass.set_bind_group(1, &material.bind_group, &[]);
+
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..mesh.num_elements, 0, 0..self.instances.len() as _);
+            }
         }
 
         let texture_id = self.gui.viewport_texture_id;
