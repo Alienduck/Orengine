@@ -1,7 +1,8 @@
 use crate::{
-    camera::{Camera, CameraController, CameraUniform},
+    camera::{Camera, CameraUniform},
     error::{OrengineError, Result},
     gui::Gui,
+    input::InputHandler,
     instance::{Instance, InstanceRaw},
     light::LightUniform,
     models::load_model,
@@ -9,12 +10,7 @@ use crate::{
     vertex::Vertex,
 };
 use wgpu::util::DeviceExt;
-use winit::{
-    dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
-    keyboard::PhysicalKey,
-    window::Window,
-};
+use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 /// The main state of the application, holding all WGPU and rendering data.
 /// This struct is responsible for managing the GPU resources, rendering pipeline,
@@ -30,6 +26,7 @@ pub struct State {
     pub light_uniform: LightUniform,
 
     render_pipeline: wgpu::RenderPipeline,
+    render_target: textures::Texture,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
@@ -38,7 +35,7 @@ pub struct State {
     instance_buffer: wgpu::Buffer,
 
     camera: Camera,
-    camera_controller: CameraController,
+    input_handler: InputHandler,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -47,7 +44,7 @@ pub struct State {
     diffuse_bind_group: wgpu::BindGroup,
     depth_texture: textures::Texture,
 
-    right_mouse_pressed: bool,
+    is_scene_hovered: bool,
 
     #[allow(dead_code)]
     light_buffer: wgpu::Buffer,
@@ -177,7 +174,7 @@ impl State {
             zfar: 100.0,
         };
 
-        let camera_controller = CameraController::new(0.01);
+        let input_handler = InputHandler::new(0.01);
 
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
@@ -343,7 +340,12 @@ impl State {
             multiview: None,
         });
 
-        let gui = Gui::new(&window, &device, config.format);
+        let render_target =
+            crate::textures::Texture::create_render_target(&device, &config, "Render Target");
+
+        let mut gui = Gui::new(&window, &device, config.format);
+
+        gui.register_viewport_texture(&device, &render_target.view, config.format);
 
         Ok(Self {
             surface,
@@ -353,17 +355,18 @@ impl State {
             size,
             window,
             render_pipeline,
+            render_target,
             vertex_buffer,
             index_buffer,
             num_indices,
             camera,
-            camera_controller,
+            input_handler,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
             diffuse_bind_group,
             depth_texture,
-            right_mouse_pressed: false,
+            is_scene_hovered: false,
             instances,
             instance_buffer,
             light_uniform,
@@ -380,62 +383,39 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            self.depth_texture =
-                textures::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.render_target = crate::textures::Texture::create_render_target(
+                &self.device,
+                &self.config,
+                "Render Target",
+            );
+            self.depth_texture = textures::Texture::create_depth_texture(
+                &self.device,
+                &self.config,
+                "depth_texture",
+            );
+            self.gui
+                .update_viewport_texture(&self.device, &self.render_target.view);
         }
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        if self.gui.handle_event(&self.window, event) {
-            return true;
-        }
+        let consumed = self.gui.handle_event(&self.window, event);
 
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state,
-                        physical_key: PhysicalKey::Code(keycode),
-                        ..
-                    },
-                ..
-            } => self.camera_controller.process_keyboard(*keycode, *state),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-                ..
-            } => {
-                self.right_mouse_pressed = true;
-                let _ = self
-                    .window
-                    .set_cursor_grab(winit::window::CursorGrabMode::Confined);
-                self.window.set_cursor_visible(false);
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: winit::event::MouseButton::Right,
-                ..
-            } => {
-                self.right_mouse_pressed = false;
-                let _ = self
-                    .window
-                    .set_cursor_grab(winit::window::CursorGrabMode::None);
-                self.window.set_cursor_visible(true);
-                true
-            }
-            _ => false,
-        }
+        let handled =
+            self.input_handler
+                .process_input(event, &self.window, consumed, self.is_scene_hovered);
+
+        consumed || handled
     }
 
     pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
-        if self.right_mouse_pressed {
-            self.camera_controller.process_mouse(delta.0, delta.1);
-        }
+        self.input_handler.handle_mouse_motion(delta);
     }
 
     pub fn update(&mut self) {
-        self.camera_controller.update_camera(&mut self.camera);
+        self.input_handler
+            .camera_controller
+            .update_camera(&mut self.camera);
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -444,9 +424,9 @@ impl State {
         );
     }
 
-    pub fn render(&mut self) -> std::result::Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<()> {
         let output = self.surface.get_current_texture()?;
-        let view = output
+        let view_surface = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -458,9 +438,9 @@ impl State {
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("3D Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.render_target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -494,33 +474,58 @@ impl State {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
+        let texture_id = self.gui.viewport_texture_id;
+
+        let mut temp_light_position = self.light_uniform.position;
+        let mut temp_light_color = self.light_uniform.color;
+
+        let mut is_scene_hovered = self.is_scene_hovered;
+
         self.gui.render(
             &self.device,
             &self.queue,
             &mut encoder,
             &self.window,
-            &view,
+            &view_surface,
             |ctx| {
-                egui::Window::new("Inspector").show(ctx, |ui| {
-                    ui.heading("Light Settings");
+                egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+                    egui::menu::bar(ui, |ui| {
+                        ui.menu_button("Fichier", |_| {});
+                    });
+                });
+                egui::SidePanel::left("hierarchy").show(ctx, |ui| {
+                    ui.label("Scène 3D");
+                    ui.separator();
+                    ui.label("Pizzas (x100)");
+                });
 
-                    ui.label("Position X");
-                    ui.add(egui::Slider::new(
-                        &mut self.light_uniform.position[0],
-                        -10.0..=10.0,
-                    ));
+                egui::SidePanel::right("inspector").show(ctx, |ui| {
+                    ui.heading("Lumière");
+                    ui.add(egui::Slider::new(&mut temp_light_position[0], -10.0..=10.0).text("X"));
+                    ui.add(egui::Slider::new(&mut temp_light_position[1], -10.0..=10.0).text("Y"));
+                    ui.add(egui::Slider::new(&mut temp_light_position[2], -10.0..=10.0).text("Z"));
 
-                    ui.label("Color");
-                    let mut color = [
-                        self.light_uniform.color[0],
-                        self.light_uniform.color[1],
-                        self.light_uniform.color[2],
-                    ];
-                    ui.color_edit_button_rgb(&mut color);
-                    self.light_uniform.color = color;
+                    ui.separator();
+                    ui.label("Couleur");
+                    ui.color_edit_button_rgb(&mut temp_light_color);
+                });
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(id) = texture_id {
+                        let response =
+                            ui.image(egui::load::SizedTexture::new(id, ui.available_size()));
+                        is_scene_hovered = response.hovered();
+                    } else {
+                        ui.label("Chargement de la texture...");
+                    }
                 });
             },
         );
+
+        self.is_scene_hovered = is_scene_hovered;
+
+        self.light_uniform.position = temp_light_position;
+        self.light_uniform.color = temp_light_color;
 
         self.queue.write_buffer(
             &self.light_buffer,
@@ -530,6 +535,7 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
         Ok(())
     }
 }

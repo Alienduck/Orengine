@@ -5,6 +5,7 @@ use winit::{event::WindowEvent, window::Window};
 
 pub struct Gui {
     pub context: egui::Context,
+    pub viewport_texture_id: Option<egui::TextureId>,
     state: State,
     renderer: Renderer,
 }
@@ -12,18 +13,15 @@ pub struct Gui {
 impl Gui {
     pub fn new(window: &Window, device: &Device, format: TextureFormat) -> Self {
         let context = egui::Context::default();
-
-        // Create UI state
         let id = context.viewport_id();
         let state = State::new(context.clone(), id, &window, None, None);
-
-        // Create the renderer that will draw the UI over your game
         let renderer = Renderer::new(device, format, None, 1);
 
         Self {
             context,
             state,
             renderer,
+            viewport_texture_id: None,
         }
     }
 
@@ -32,6 +30,29 @@ impl Gui {
         // to prevent the camera from moving when interacting with the UI.
         let response = self.state.on_window_event(window, event);
         response.consumed
+    }
+
+    pub fn register_viewport_texture(
+        &mut self,
+        device: &Device,
+        texture_view: &wgpu::TextureView,
+        _format: TextureFormat,
+    ) {
+        let id =
+            self.renderer
+                .register_native_texture(device, texture_view, wgpu::FilterMode::Linear);
+        self.viewport_texture_id = Some(id);
+    }
+
+    pub fn update_viewport_texture(&mut self, device: &Device, texture_view: &wgpu::TextureView) {
+        if let Some(id) = self.viewport_texture_id {
+            self.renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                texture_view,
+                wgpu::FilterMode::Linear,
+                id,
+            );
+        }
     }
 
     pub fn resize(&mut self, _window: &Window) {
@@ -47,21 +68,14 @@ impl Gui {
         view: &wgpu::TextureView,
         ui_callback: impl FnOnce(&egui::Context),
     ) {
-        // 1. Get the inputs from the window
         let raw_input = self.state.take_egui_input(window);
-
-        // 2. Build the UI
         let full_output = self.context.run(raw_input, ui_callback);
-
-        // 3. Prepare the triangles to render
         let tris = self
             .context
             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-        // 4. Update textures and buffers
-        let window_size = window.inner_size();
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [window_size.width, window_size.height],
+            size_in_pixels: [window.inner_size().width, window.inner_size().height],
             pixels_per_point: window.scale_factor() as f32,
         };
 
@@ -73,19 +87,13 @@ impl Gui {
         self.renderer
             .update_buffers(device, queue, encoder, &tris, &screen_descriptor);
 
-        // Cleanup unused textures
-        for id in &full_output.textures_delta.free {
-            self.renderer.free_texture(id);
-        }
-
-        // 5. Draw the UI
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("GUI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load, // Important: We load existing content to overlay UI
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -95,5 +103,10 @@ impl Gui {
         });
 
         self.renderer.render(&mut rpass, &tris, &screen_descriptor);
+        drop(rpass); // Unborrow before freeing textures
+
+        for id in &full_output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
     }
 }
