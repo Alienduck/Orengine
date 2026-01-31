@@ -9,6 +9,8 @@ use crate::{
     textures,
     vertex::Vertex,
 };
+use glam::{Vec2, Vec3};
+use std::collections::HashSet;
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
@@ -39,9 +41,13 @@ pub struct State {
     pub light_uniform: LightUniform,
 
     render_pipeline: wgpu::RenderPipeline,
+    selection_pipeline: wgpu::RenderPipeline,
     render_target: textures::Texture,
     meshes: Vec<MeshRenderData>,
     materials: Vec<MaterialRenderData>,
+    cpu_meshes: Vec<crate::models::Mesh>,
+    selection_bind_group: wgpu::BindGroup,
+    hover_bind_group: wgpu::BindGroup,
 
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
@@ -52,14 +58,17 @@ pub struct State {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
-    #[allow(dead_code)]
     depth_texture: textures::Texture,
 
     is_scene_hovered: bool,
 
-    #[allow(dead_code)]
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
+
+    model_aabb: crate::models::Aabb,
+    selected_instances: HashSet<usize>,
+    selection_drag_start: Option<egui::Pos2>,
+    hovered_instance: Option<usize>,
 }
 
 impl State {
@@ -89,7 +98,7 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::empty(),
+                    required_features: wgpu::Features::POLYGON_MODE_LINE,
                     required_limits: wgpu::Limits::default(),
                 },
                 None,
@@ -119,6 +128,9 @@ impl State {
 
         // 4. Assets (Model & Textures)
         let model = load_model(model_path)?;
+        let model_aabb = model.aabb;
+        // Keep a copy of meshes on CPU for raycasting
+        let cpu_meshes = model.meshes.clone();
 
         const NUM_INSTANCES_PER_ROW: u32 = 10;
         const INSTANCE_DISPLACEMENT: glam::Vec3 = glam::Vec3::new(
@@ -230,7 +242,7 @@ impl State {
                 textures::Texture::from_image(&device, &queue, &texture_path, Some(&mat.name))
                     .unwrap_or_else(|_| {
                         eprintln!(
-                            "Erreur chargement texture: {:?}. Utilisation texture magenta.",
+                            "Error loading texture: {:?}. Using magenta texture.",
                             texture_path
                         );
                         textures::Texture::from_color(
@@ -269,6 +281,52 @@ impl State {
                 texture,
             });
         }
+
+        // Create selection texture (white) and bind group
+        let selection_texture = textures::Texture::from_color(
+            &device,
+            &queue,
+            [0, 162, 255, 255], // Roblox Studio Blue
+            Some("Selection Texture"),
+        );
+
+        let selection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&selection_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&selection_texture.sampler),
+                },
+            ],
+            label: Some("selection_bind_group"),
+        });
+
+        // Create hover texture (White)
+        let hover_texture = textures::Texture::from_color(
+            &device,
+            &queue,
+            [255, 255, 255, 255], // White
+            Some("Hover Texture"),
+        );
+
+        let hover_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&hover_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&hover_texture.sampler),
+                },
+            ],
+            label: Some("hover_bind_group"),
+        });
 
         // Process Meshes
         let meshes = model
@@ -386,6 +444,47 @@ impl State {
             multiview: None,
         });
 
+        let selection_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Selection Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc(), InstanceRaw::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Line, // Wireframe mode
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: crate::textures::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: -2,      // Bias to draw lines on top of solid mesh
+                    slope_scale: -2.0, // Bias based on slope
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         let render_target =
             crate::textures::Texture::create_render_target(&device, &config, "Render Target");
 
@@ -401,9 +500,13 @@ impl State {
             size,
             window,
             render_pipeline,
+            selection_pipeline,
             render_target,
             meshes,
             materials,
+            cpu_meshes,
+            selection_bind_group,
+            hover_bind_group,
             camera,
             input_handler,
             camera_uniform,
@@ -417,6 +520,10 @@ impl State {
             light_buffer,
             light_bind_group,
             gui,
+            model_aabb,
+            selected_instances: HashSet::new(),
+            selection_drag_start: None,
+            hovered_instance: None,
         })
     }
 
@@ -454,6 +561,84 @@ impl State {
 
     pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
         self.input_handler.handle_mouse_motion(delta);
+    }
+
+    /// Casts a ray into the scene and returns the closest instance intersected.
+    fn get_hit_instance(&self, ray: crate::camera::Ray) -> Option<(usize, f32)> {
+        let mut closest_dist = f32::INFINITY;
+        let mut hit_instance = None;
+
+        let aabb_min = Vec3::from_array(self.model_aabb.min);
+        let aabb_max = Vec3::from_array(self.model_aabb.max);
+
+        for (i, instance) in self.instances.iter().enumerate() {
+            // Transform the ray into the instance's local space
+            // This is equivalent to transforming the AABB into world space (OBB) but cheaper
+            let to_local = instance.rotation.inverse();
+            let ray_origin_local = to_local * (ray.origin - instance.position);
+            let ray_dir_local = to_local * ray.direction;
+
+            let local_ray = crate::camera::Ray {
+                origin: ray_origin_local,
+                direction: ray_dir_local,
+            };
+
+            // 1. Broad Phase: Check AABB first (cheap)
+            if let Some(dist) = local_ray.intersect_aabb(aabb_min, aabb_max) {
+                // Optimization: If the AABB hit is already further than the closest confirmed hit, skip
+                if dist > closest_dist {
+                    continue;
+                }
+
+                // 2. Narrow Phase: Check actual triangles (expensive but precise)
+                for mesh in &self.cpu_meshes {
+                    // Iterate over indices by 3 (triangles)
+                    for chunk in mesh.indices.chunks(3) {
+                        if let [i0, i1, i2] = chunk {
+                            let v0 = Vec3::from_array(mesh.vertices[*i0 as usize].position);
+                            let v1 = Vec3::from_array(mesh.vertices[*i1 as usize].position);
+                            let v2 = Vec3::from_array(mesh.vertices[*i2 as usize].position);
+
+                            if let Some(tri_dist) = local_ray.intersect_triangle(v0, v1, v2) {
+                                if tri_dist < closest_dist {
+                                    closest_dist = tri_dist;
+                                    hit_instance = Some(i);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fallback: if we hit AABB but somehow missed all triangles (e.g. numerical error or gaps),
+                // we don't select. Or we could keep the AABB hit if we wanted "loose" selection,
+                // but here we want precision.
+                // The loop above updates closest_dist/hit_instance directly.
+            }
+        }
+
+        hit_instance.map(|i| (i, closest_dist))
+    }
+
+    fn perform_box_selection(&mut self, selection_rect: egui::Rect, image_rect: egui::Rect) {
+        self.selected_instances.clear();
+        let view_proj = self.camera.build_view_projection_matrix();
+
+        for (i, instance) in self.instances.iter().enumerate() {
+            let pos = instance.position;
+            let clip = view_proj * glam::Vec4::new(pos.x, pos.y, pos.z, 1.0);
+            // Check if point is behind camera
+            if clip.w <= 0.0 {
+                continue;
+            }
+            let ndc = clip / clip.w;
+
+            let screen_x = image_rect.min.x + (ndc.x + 1.0) * 0.5 * image_rect.width();
+            let screen_y = image_rect.min.y + (1.0 - ndc.y) * 0.5 * image_rect.height();
+
+            if selection_rect.contains(egui::pos2(screen_x, screen_y)) {
+                self.selected_instances.insert(i);
+            }
+        }
+        println!("Selected {} items", self.selected_instances.len());
     }
 
     pub fn update(&mut self) {
@@ -522,6 +707,46 @@ impl State {
                     .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..mesh.num_elements, 0, 0..self.instances.len() as _);
             }
+
+            // Draw selection wireframe
+            if !self.selected_instances.is_empty() {
+                render_pass.set_pipeline(&self.selection_pipeline);
+                // Use the white selection texture instead of the object's texture
+                render_pass.set_bind_group(1, &self.selection_bind_group, &[]);
+
+                for i in &self.selected_instances {
+                    let i = *i as u32;
+                    for mesh in &self.meshes {
+                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            mesh.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        // Draw only the selected instance
+                        render_pass.draw_indexed(0..mesh.num_elements, 0, i..i + 1);
+                    }
+                }
+            }
+
+            // Draw hover wireframe (if not selected)
+            if let Some(i) = self.hovered_instance {
+                if !self.selected_instances.contains(&i) {
+                    render_pass.set_pipeline(&self.selection_pipeline);
+                    render_pass.set_bind_group(1, &self.hover_bind_group, &[]);
+
+                    let i = i as u32;
+                    for mesh in &self.meshes {
+                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            mesh.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        render_pass.draw_indexed(0..mesh.num_elements, 0, i..i + 1);
+                    }
+                }
+            }
         }
 
         let texture_id = self.gui.viewport_texture_id;
@@ -530,6 +755,10 @@ impl State {
         let mut temp_light_color = self.light_uniform.color;
 
         let mut is_scene_hovered = self.is_scene_hovered;
+        let mut hover_request = None;
+        let mut click_request = false;
+        let mut box_selection_request = None;
+        let mut drag_start = self.selection_drag_start;
 
         self.gui.render(
             &self.device,
@@ -540,37 +769,114 @@ impl State {
             |ctx| {
                 egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
                     egui::menu::bar(ui, |ui| {
-                        ui.menu_button("Fichier", |_| {});
+                        ui.menu_button("File", |_| {});
                     });
                 });
                 egui::SidePanel::left("hierarchy").show(ctx, |ui| {
-                    ui.label("Scène 3D");
+                    ui.label("3D Scene");
                     ui.separator();
                     ui.label("Pizzas (x100)");
                 });
 
                 egui::SidePanel::right("inspector").show(ctx, |ui| {
-                    ui.heading("Lumière");
+                    ui.heading("Light");
                     ui.add(egui::Slider::new(&mut temp_light_position[0], -10.0..=10.0).text("X"));
                     ui.add(egui::Slider::new(&mut temp_light_position[1], -10.0..=10.0).text("Y"));
                     ui.add(egui::Slider::new(&mut temp_light_position[2], -10.0..=10.0).text("Z"));
 
                     ui.separator();
-                    ui.label("Couleur");
+                    ui.label("Color");
                     ui.color_edit_button_rgb(&mut temp_light_color);
                 });
 
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if let Some(id) = texture_id {
-                        let response =
-                            ui.image(egui::load::SizedTexture::new(id, ui.available_size()));
+                        let response = ui.add(
+                            egui::Image::new(egui::load::SizedTexture::new(
+                                id,
+                                ui.available_size(),
+                            ))
+                            .sense(egui::Sense::click_and_drag()),
+                        );
                         is_scene_hovered = response.hovered();
+
+                        // Handle hover
+                        if response.hovered() {
+                            if let Some(pointer_pos) = response.hover_pos() {
+                                hover_request = Some((pointer_pos, response.rect));
+                            }
+                        }
+
+                        // Handle Drag Start
+                        if response.drag_started_by(egui::PointerButton::Primary) {
+                            drag_start = response.interact_pointer_pos();
+                        }
+                        // Handle Dragging (Draw Rect)
+                        if let Some(start_pos) = drag_start {
+                            if response.dragged_by(egui::PointerButton::Primary) {
+                                if let Some(curr_pos) = response.interact_pointer_pos() {
+                                    let rect = egui::Rect::from_two_pos(start_pos, curr_pos);
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        0.0,
+                                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                    );
+                                }
+                            }
+                        }
+
+                        // Handle Drag End (Box Selection)
+                        if response.drag_stopped() {
+                            if let Some(start_pos) = drag_start {
+                                if let Some(end_pos) = response.interact_pointer_pos() {
+                                    let rect = egui::Rect::from_two_pos(start_pos, end_pos);
+                                    // Only trigger box select if dragged enough, to avoid conflict with click
+                                    if rect.width() > 5.0 || rect.height() > 5.0 {
+                                        box_selection_request = Some((rect, response.rect));
+                                    }
+                                }
+                            }
+                            drag_start = None;
+                        }
+
+                        // Handle click
+                        if response.clicked() {
+                            click_request = true;
+                        }
                     } else {
-                        ui.label("Chargement de la texture...");
+                        ui.label("Loading texture...");
                     }
                 });
             },
         );
+
+        self.selection_drag_start = drag_start;
+
+        if let Some((rect, img_rect)) = box_selection_request {
+            self.perform_box_selection(rect, img_rect);
+        }
+
+        if let Some((pos, rect)) = hover_request {
+            let rel_pos = pos - rect.min;
+            let ray = self.camera.create_ray(
+                Vec2::new(rel_pos.x, rel_pos.y),
+                Vec2::new(rect.width(), rect.height()),
+            );
+
+            if let Some((idx, dist)) = self.get_hit_instance(ray) {
+                self.hovered_instance = Some(idx);
+                if click_request {
+                    self.selected_instances.clear();
+                    self.selected_instances.insert(idx);
+                    println!("✅ Instance selected: ID {} (Distance: {:.2})", idx, dist);
+                }
+            } else {
+                self.hovered_instance = None;
+                if click_request {
+                    self.selected_instances.clear();
+                }
+            }
+        }
 
         self.is_scene_hovered = is_scene_hovered;
 
