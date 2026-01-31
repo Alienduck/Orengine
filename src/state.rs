@@ -67,6 +67,7 @@ pub struct State {
 
     model_aabb: crate::models::Aabb,
     selected_instances: HashSet<usize>,
+    potential_selection: HashSet<usize>,
     selection_drag_start: Option<egui::Pos2>,
     hovered_instance: Option<usize>,
 }
@@ -522,6 +523,7 @@ impl State {
             gui,
             model_aabb,
             selected_instances: HashSet::new(),
+            potential_selection: HashSet::new(),
             selection_drag_start: None,
             hovered_instance: None,
         })
@@ -618,8 +620,12 @@ impl State {
         hit_instance.map(|i| (i, closest_dist))
     }
 
-    fn perform_box_selection(&mut self, selection_rect: egui::Rect, image_rect: egui::Rect) {
-        self.selected_instances.clear();
+    fn get_instances_in_rect(
+        &self,
+        selection_rect: egui::Rect,
+        image_rect: egui::Rect,
+    ) -> HashSet<usize> {
+        let mut result = HashSet::new();
         let view_proj = self.camera.build_view_projection_matrix();
 
         for (i, instance) in self.instances.iter().enumerate() {
@@ -635,10 +641,10 @@ impl State {
             let screen_y = image_rect.min.y + (1.0 - ndc.y) * 0.5 * image_rect.height();
 
             if selection_rect.contains(egui::pos2(screen_x, screen_y)) {
-                self.selected_instances.insert(i);
+                result.insert(i);
             }
         }
-        println!("Selected {} items", self.selected_instances.len());
+        result
     }
 
     pub fn update(&mut self) {
@@ -729,9 +735,28 @@ impl State {
                 }
             }
 
+            // Draw potential selection (drag box)
+            if !self.potential_selection.is_empty() {
+                render_pass.set_pipeline(&self.selection_pipeline);
+                render_pass.set_bind_group(1, &self.hover_bind_group, &[]);
+
+                for i in &self.potential_selection {
+                    let i = *i as u32;
+                    for mesh in &self.meshes {
+                        render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            mesh.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        render_pass.draw_indexed(0..mesh.num_elements, 0, i..i + 1);
+                    }
+                }
+            }
+
             // Draw hover wireframe (if not selected)
             if let Some(i) = self.hovered_instance {
-                if !self.selected_instances.contains(&i) {
+                if !self.selected_instances.contains(&i) && !self.potential_selection.contains(&i) {
                     render_pass.set_pipeline(&self.selection_pipeline);
                     render_pass.set_bind_group(1, &self.hover_bind_group, &[]);
 
@@ -758,6 +783,7 @@ impl State {
         let mut hover_request = None;
         let mut click_request = false;
         let mut box_selection_request = None;
+        let mut current_drag_rect = None;
         let mut drag_start = self.selection_drag_start;
 
         self.gui.render(
@@ -821,6 +847,7 @@ impl State {
                                         0.0,
                                         egui::Stroke::new(1.0, egui::Color32::WHITE),
                                     );
+                                    current_drag_rect = Some((rect, response.rect));
                                 }
                             }
                         }
@@ -852,8 +879,16 @@ impl State {
 
         self.selection_drag_start = drag_start;
 
+        if let Some((rect, img_rect)) = current_drag_rect {
+            self.potential_selection = self.get_instances_in_rect(rect, img_rect);
+        } else {
+            self.potential_selection.clear();
+        }
+
         if let Some((rect, img_rect)) = box_selection_request {
-            self.perform_box_selection(rect, img_rect);
+            self.selected_instances = self.get_instances_in_rect(rect, img_rect);
+            println!("Selected {} items", self.selected_instances.len());
+            self.potential_selection.clear();
         }
 
         if let Some((pos, rect)) = hover_request {
