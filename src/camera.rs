@@ -1,6 +1,71 @@
 use winit::event::ElementState;
 use winit::keyboard::KeyCode;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Ray {
+    pub origin: glam::Vec3,
+    pub direction: glam::Vec3,
+}
+
+impl Ray {
+    /// Checks for intersection with an Axis-Aligned Bounding Box (AABB).
+    /// Returns the distance to the intersection, or None if no intersection.
+    pub fn intersect_aabb(&self, min: glam::Vec3, max: glam::Vec3) -> Option<f32> {
+        let t1 = (min.x - self.origin.x) / self.direction.x;
+        let t2 = (max.x - self.origin.x) / self.direction.x;
+        let t3 = (min.y - self.origin.y) / self.direction.y;
+        let t4 = (max.y - self.origin.y) / self.direction.y;
+        let t5 = (min.z - self.origin.z) / self.direction.z;
+        let t6 = (max.z - self.origin.z) / self.direction.z;
+
+        let tmin = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
+        let tmax = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
+
+        if tmax < 0.0 || tmin > tmax {
+            None
+        } else {
+            Some(tmin.max(0.0))
+        }
+    }
+
+    /// Checks for intersection with a Triangle defined by v0, v1, v2.
+    /// Returns the distance to the intersection, or None.
+    /// Uses Möller–Trumbore intersection algorithm.
+    pub fn intersect_triangle(&self, v0: glam::Vec3, v1: glam::Vec3, v2: glam::Vec3) -> Option<f32> {
+        let edge1 = v1 - v0;
+        let edge2 = v2 - v0;
+        let h = self.direction.cross(edge2);
+        let a = edge1.dot(h);
+
+        // Ray is parallel to the triangle
+        if a > -f32::EPSILON && a < f32::EPSILON {
+            return None;
+        }
+
+        let f = 1.0 / a;
+        let s = self.origin - v0;
+        let u = f * s.dot(h);
+
+        if u < 0.0 || u > 1.0 {
+            return None;
+        }
+
+        let q = s.cross(edge1);
+        let v = f * self.direction.dot(q);
+
+        if v < 0.0 || u + v > 1.0 {
+            return None;
+        }
+
+        let t = f * edge2.dot(q);
+        if t > f32::EPSILON {
+            Some(t)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct Camera {
     pub eye: glam::Vec3,
     pub target: glam::Vec3,
@@ -16,6 +81,31 @@ impl Camera {
         let view = glam::Mat4::look_at_rh(self.eye, self.target, self.up);
         let proj = glam::Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar);
         proj * view
+    }
+
+    /// Creates a Ray from screen coordinates (pixels)
+    pub fn create_ray(&self, screen_pos: glam::Vec2, screen_size: glam::Vec2) -> Ray {
+        // Convert screen position to Normalized Device Coordinates (NDC)
+        // NDC range is -1.0 to 1.0
+        let ndc_x = (screen_pos.x / screen_size.x) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen_pos.y / screen_size.y) * 2.0;
+
+        let ndc = glam::Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
+
+        // Unproject to World Space
+        let view_proj = self.build_view_projection_matrix();
+        let inv_view_proj = view_proj.inverse();
+
+        let mut world_pos = inv_view_proj * ndc;
+        world_pos /= world_pos.w;
+
+        let direction =
+            (glam::Vec3::new(world_pos.x, world_pos.y, world_pos.z) - self.eye).normalize();
+
+        Ray {
+            origin: self.eye,
+            direction,
+        }
     }
 }
 
